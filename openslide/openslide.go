@@ -46,7 +46,7 @@ type Slide struct {
 	ptr *C.openslide_t
 }
 
-// Open Open an OpenSlide image.
+// Open Get the Slide object referring to an OpenSlide image.
 // Do not forget to defer opening the slide.
 // This is an expensive operation, you will want to cache the result.
 func Open(filename string) (Slide, error) {
@@ -119,6 +119,56 @@ func (slide Slide) ReadRegion(x, y int, level int, w, h int) (image.Image, error
 
 	upLeft := image.Point{}
 	lowRight := image.Point{X: w, Y: h}
+	region := image.NewRGBA(image.Rectangle{Min: upLeft, Max: lowRight})
+	region.Pix = rawArray
+
+	return region, nil
+}
+
+// AssociatedImageNames Get the names of the associated images
+func (slide Slide) AssociatedImageNames() []string {
+	cAssociatedImageNames := C.openslide_get_associated_image_names(slide.ptr)
+	var strings []string
+	for i := 0; C.str_at(cAssociatedImageNames, C.int(i)) != nil; i++ {
+		strings = append(strings, C.GoString(C.str_at(cAssociatedImageNames, C.int(i))))
+	}
+	return strings
+}
+
+// AssociatedImageDimensions Get the dimensions of the associated images
+func (slide Slide) AssociatedImageDimensions() map[string][2]int {
+	associatedNames := slide.AssociatedImageNames()
+	output := make(map[string][2]int)
+
+	for _, associatedName := range associatedNames {
+		var a, b C.int64_t
+		C.openslide_get_associated_image_dimensions(slide.ptr, C.CString(associatedName), &a, &b)
+		output[associatedName] = [2]int{int(a), int(b)}
+	}
+	return output
+}
+
+// ReadAssociatedImage Read an associated image as an RGBA image.
+func (slide Slide) ReadAssociatedImage(associatedName string) (image.Image, error) {
+	dimensions, ok := slide.AssociatedImageDimensions()[associatedName]
+	if !ok {
+		return nil, errors.New("associated image does not exist")
+	}
+	length := dimensions[0] * dimensions[1] * 4
+	rawPtr := C.malloc(C.size_t(length))
+	defer C.free(rawPtr)
+
+	C.openslide_read_associated_image(slide.ptr, C.CString(associatedName), (*C.uint32_t)(rawPtr))
+	if txt := C.openslide_get_error(slide.ptr); txt != nil {
+		return nil, errors.New(C.GoString(txt))
+	}
+
+	// Convert ARGB to RGBA
+	C.argb2rgba((*C.uint32_t)(rawPtr), C.int(length/4))
+	rawArray := C.GoBytes(rawPtr, C.int(length))
+
+	upLeft := image.Point{}
+	lowRight := image.Point{X: dimensions[0], Y: dimensions[1]}
 	region := image.NewRGBA(image.Rectangle{Min: upLeft, Max: lowRight})
 	region.Pix = rawArray
 
